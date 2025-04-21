@@ -1,0 +1,153 @@
+
+import socket
+import struct
+import random
+import argparse
+
+class DNSQuery:
+    def __init__(self, domain):
+        self.domain = domain
+        self.transaction_id = random.randint(0, 65535)  # Random transaction ID
+    
+    def build_query(self):
+        """Build a DNS query packet."""
+        # Header section
+        header = struct.pack(
+            "!HHHHHH",
+            self.transaction_id,  # Transaction ID
+            0x0100,  # Flags: standard query (0x0100)
+            1,       # Questions: 1
+            0,       # Answer RRs: 0
+            0,       # Authority RRs: 0
+            0        # Additional RRs: 0
+        )
+        
+        # Question section - domain name
+        query_parts = []
+        for part in self.domain.split('.'):
+            query_parts.append(bytes([len(part)]))
+            query_parts.append(part.encode('utf-8'))
+        query_parts.append(b'\x00')  # Terminating null byte
+        
+        # Question section - type and class
+        query_parts.append(struct.pack('!HH', 1, 1))  # Type: A (1), Class: IN (1)
+        
+        return header + b''.join(query_parts)
+
+class DNSResponse:
+    def __init__(self, data):
+        self.data = data
+        self.answers = []
+        self.parse_response()
+    
+    def parse_response(self):
+        """Parse the DNS response packet."""
+        # Parse header
+        header = struct.unpack('!HHHHHH', self.data[:12])
+        transaction_id, flags, questions, answers, authority, additional = header
+        
+        # Check if response is valid
+        if flags & 0x8000 == 0:  # Check QR bit
+            raise Exception("Not a valid DNS response")
+        
+        if flags & 0x000F != 0:  # Check RCODE
+            error_codes = {
+                1: "Format Error",
+                2: "Server Failure",
+                3: "Name Error (Domain does not exist)",
+                4: "Not Implemented",
+                5: "Refused"
+            }
+            rcode = flags & 0x000F
+            raise Exception(f"DNS Error: {error_codes.get(rcode, f'Unknown Error ({rcode})')}")
+        
+        # Skip the question section
+        offset = 12  # Header size
+        
+        # Skip the domain name in the question
+        while True:
+            length = self.data[offset]
+            offset += 1
+            if length == 0:
+                break
+            offset += length
+        
+        # Skip QTYPE and QCLASS (4 bytes total)
+        offset += 4
+        
+        # Parse answers
+        for _ in range(answers):
+            # Domain name can be a pointer or a sequence of labels
+            if (self.data[offset] & 0xC0) == 0xC0:  # Compressed domain name pointer
+                offset += 2  # Skip pointer
+            else:
+                # Skip the domain name labels
+                while True:
+                    length = self.data[offset]
+                    offset += 1
+                    if length == 0:
+                        break
+                    offset += length
+            
+            # Extract record type, class, TTL, and data length
+            rec_type, rec_class, ttl, data_len = struct.unpack('!HHIH', self.data[offset:offset+10])
+            offset += 10
+            
+            # Process record data based on type
+            if rec_type == 1:  # A record (IPv4)
+                ip = socket.inet_ntoa(self.data[offset:offset+data_len])
+                self.answers.append(('A', ip, ttl))
+            elif rec_type == 5:  # CNAME record
+                # This is simplified - proper CNAME parsing would require handling compression
+                cname = "CNAME data"  # Placeholder
+                self.answers.append(('CNAME', cname, ttl))
+            elif rec_type == 28:  # AAAA record (IPv6)
+                ip = socket.inet_ntop(socket.AF_INET6, self.data[offset:offset+data_len])
+                self.answers.append(('AAAA', ip, ttl))
+            
+            offset += data_len
+
+def dns_lookup(domain, dns_server="8.8.8.8", port=53, timeout=5):
+    """Perform a DNS lookup using raw UDP sockets."""
+    # Create UDP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    
+    try:
+        # Create and send query
+        query = DNSQuery(domain)
+        packet = query.build_query()
+        sock.sendto(packet, (dns_server, port))
+        
+        # Receive response
+        response_data, _ = sock.recvfrom(1024)
+        response = DNSResponse(response_data)
+        
+        return response
+    finally:
+        sock.close()
+
+def main():
+    parser = argparse.ArgumentParser(description='DNS Lookup Tool using UDP Protocol')
+    parser.add_argument('domain', help='Domain name to lookup')
+    parser.add_argument('--server', default='8.8.8.8', help='DNS server to query (default: 8.8.8.8)')
+    parser.add_argument('--port', type=int, default=53, help='DNS server port (default: 53)')
+    parser.add_argument('--timeout', type=int, default=5, help='Query timeout in seconds (default: 5)')
+    
+    args = parser.parse_args()
+    
+    try:
+        print(f"Looking up {args.domain} using DNS server {args.server}:{args.port}")
+        response = dns_lookup(args.domain, args.server, args.port, args.timeout)
+        
+        if not response.answers:
+            print("No records found")
+        else:
+            print(f"\nResults for {args.domain}:")
+            for record_type, data, ttl in response.answers:
+                print(f"{record_type} record: {data} (TTL: {ttl}s)")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()

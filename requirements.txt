@@ -1,0 +1,4 @@
+# This script uses only standard library modules, no external dependencies required
+
+# Python version
+python>=3.6
