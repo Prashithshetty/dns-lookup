@@ -19,6 +19,11 @@ A Python-based DNS lookup tool that uses raw UDP sockets to perform DNS queries.
 
 1. Clone the repository or download the script:
 
+```bash
+
+git clone https://github.com/Prashithshetty/dns-lookup.git
+
+```
 
 
 ## Usage
